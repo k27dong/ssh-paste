@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -34,21 +34,27 @@ pub fn config_path() -> Result<PathBuf> {
 }
 
 pub fn load() -> Result<Config> {
-    let path = config_path()?;
+    load_from(&config_path()?)
+}
+
+pub fn load_from(path: &Path) -> Result<Config> {
     if !path.exists() {
         return Ok(Config::default());
     }
     let raw =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
 impl Config {
     pub fn save(&self) -> Result<()> {
-        let path = config_path()?;
+        self.save_to(&config_path()?)
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<()> {
         let dir = path.parent().context("config path has no parent")?;
-        std::fs::create_dir_all(dir)?;
-        std::fs::write(&path, toml::to_string_pretty(self)?)
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::write(path, toml::to_string_pretty(self)?)
             .with_context(|| format!("writing {}", path.display()))
     }
 
@@ -98,6 +104,50 @@ mod tests {
 
     fn parsed(toml_str: &str) -> Config {
         toml::from_str(toml_str).unwrap()
+    }
+
+    fn temp_config_path() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("ssh-paste-config-{}-{nanos}", std::process::id()))
+            .join("config.toml")
+    }
+
+    #[test]
+    fn load_from_missing_path_returns_default() {
+        let cfg = load_from(&temp_config_path()).unwrap();
+        assert!(cfg.default_target.is_none());
+        assert!(cfg.targets.is_empty());
+    }
+
+    #[test]
+    fn save_to_then_load_from_roundtrips() {
+        let path = temp_config_path();
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            "pod".to_string(),
+            Target {
+                host: "hermes-pod".into(),
+                spool_dir: "~/.cache/ssh-paste".into(),
+                shim_dir: "~/.local/bin".into(),
+            },
+        );
+        let cfg = Config {
+            default_target: Some("pod".into()),
+            targets,
+        };
+
+        cfg.save_to(&path).unwrap();
+        assert!(path.exists());
+
+        let back = load_from(&path).unwrap();
+        assert_eq!(back.default_target.as_deref(), Some("pod"));
+        assert_eq!(back.targets["pod"].host, "hermes-pod");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
