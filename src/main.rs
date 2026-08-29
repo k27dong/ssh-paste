@@ -28,22 +28,28 @@ enum Command {
 fn main() {
     let cli = Cli::parse();
     let ssh = std::env::var_os("SSH_PASTE_SSH").unwrap_or_else(|| "ssh".into());
-    let _result = match cli.command {
-        Command::Send { target } => {
-            let _ = (&ssh, target);
-            todo!("task 5")
-        }
+    let result = match cli.command {
+        Command::Send { target } => cmd_send(&ssh, target.as_deref()),
         Command::Setup {
-            ssh_alias,
-            name,
-            force,
-        } => {
-            let _ = (&ssh, ssh_alias, name, force);
-            todo!("task 6")
-        }
-        Command::Remove { target } => {
-            let _ = (&ssh, target);
-            todo!("task 6")
-        }
+            ssh_alias: _,
+            name: _,
+            force: _,
+        } => todo!("task 6"),
+        Command::Remove { target: _ } => todo!("task 6"),
     };
+    if let Err(err) = result {
+        eprintln!("ssh-paste: {err:#}");
+        let code = err
+            .downcast_ref::<ssh_paste::ssh::SshFailed>()
+            .map(|f| f.0)
+            .unwrap_or(1);
+        std::process::exit(code);
+    }
+}
+
+fn cmd_send(ssh: &std::ffi::OsStr, target: Option<&str>) -> anyhow::Result<()> {
+    let cfg = ssh_paste::config::load()?;
+    let (name, t) = cfg.resolve(target)?;
+    let payload = ssh_paste::clipboard::read()?;
+    ssh_paste::send::send(ssh, name, t, payload)
 }
