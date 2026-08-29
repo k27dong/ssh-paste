@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-// pub mod config;
+pub mod config;
 // pub mod sh;
 // pub mod clipboard;
 // pub mod shims;
