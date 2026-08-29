@@ -38,15 +38,14 @@ pub fn stream(ssh: &OsStr, host: &str, script: &str, stdin: &[u8]) -> Result<()>
         .stderr(Stdio::inherit())
         .spawn()
         .with_context(|| format!("spawning {}", ssh.to_string_lossy()))?;
-    child
-        .stdin
-        .take()
-        .context("child stdin unavailable")?
-        .write_all(stdin)?;
+    let mut stdin_handle = child.stdin.take().context("child stdin unavailable")?;
+    let write_result = stdin_handle.write_all(stdin); // don't `?` yet: an early-exiting child's status must win over a broken-pipe write error
+    drop(stdin_handle);
     let status = child.wait()?;
     if !status.success() {
         return Err(SshFailed(status.code().unwrap_or(1)).into());
     }
+    write_result?;
     Ok(())
 }
 
@@ -78,5 +77,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"bytes in flight");
+    }
+
+    #[test]
+    fn stream_preserves_exit_code_when_child_exits_before_reading_stdin() {
+        let sh = std::ffi::OsStr::new("sh");
+        let payload = vec![0u8; 10 * 1024 * 1024];
+        let err = stream(sh, "-c", "exit 9", &payload).unwrap_err();
+        let failed = err.downcast_ref::<SshFailed>().unwrap();
+        assert_eq!(failed.0, 9);
     }
 }
