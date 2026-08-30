@@ -93,6 +93,11 @@ impl Target {
             if !(dir.starts_with("~/") || dir.starts_with('/')) {
                 bail!("{label} must start with ~/ or / (got '{dir}')");
             }
+            if dir.ends_with('/') {
+                bail!(
+                    "{label} must not end with '/' (got '{dir}'); it names a directory ssh-paste owns, not the home or root directory"
+                );
+            }
         }
         Ok(())
     }
@@ -212,6 +217,16 @@ mod tests {
                 .is_err()
         );
         assert!(bad("h", "~/.cache/ssh-paste", "bin").validate().is_err());
+        for dir in ["~", "~/", "/", "~/x/"] {
+            assert!(
+                bad("h", dir, "~/.local/bin").validate().is_err(),
+                "spool_dir '{dir}' accepted"
+            );
+            assert!(
+                bad("h", "~/.cache/ssh-paste", dir).validate().is_err(),
+                "shim_dir '{dir}' accepted"
+            );
+        }
         assert!(
             bad("h", "~/.cache/ssh-paste", "~/.local/bin")
                 .validate()

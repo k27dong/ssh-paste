@@ -44,7 +44,8 @@ for name in xclip wl-paste; do
   f="$dir/$name"
   if [ -e "$f" ] && head -n 2 "$f" 2>/dev/null | grep -q {marker}; then rm -f "$f"; fi
 done
-rm -rf {spool_expr}"#
+rm -f {spool_expr}/clip.png {spool_expr}/clip.txt {spool_expr}/clip.tmp
+rmdir {spool_expr} 2>/dev/null || true"#
     )
 }
 
@@ -374,6 +375,7 @@ mod tests {
     #[test]
     fn remove_script_only_deletes_marked_files() {
         let dir = std::env::temp_dir().join(format!("ssh-paste-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         let bin = dir.join("bin");
         let spool = dir.join("spool");
         std::fs::create_dir_all(&bin).unwrap();
@@ -385,6 +387,8 @@ mod tests {
         .unwrap();
         std::fs::write(bin.join("wl-paste"), "#!/bin/sh\nreal tool\n").unwrap();
         std::fs::write(spool.join("clip.txt"), "x").unwrap();
+        std::fs::write(spool.join("clip.png"), "x").unwrap();
+        std::fs::write(spool.join("notes.txt"), "not ours").unwrap();
         let script = remove_script(
             &format!("'{}'", bin.display()),
             &format!("'{}'", spool.display()),
@@ -397,6 +401,54 @@ mod tests {
         assert!(ok.success());
         assert!(!bin.join("xclip").exists(), "marked shim deleted");
         assert!(bin.join("wl-paste").exists(), "foreign file preserved");
-        assert!(!spool.exists(), "spool removed");
+        assert!(!spool.join("clip.txt").exists(), "spooled text deleted");
+        assert!(!spool.join("clip.png").exists(), "spooled image deleted");
+        assert!(spool.join("notes.txt").exists(), "foreign spool file kept");
+        assert!(spool.exists(), "spool with foreign content kept");
+    }
+
+    #[test]
+    fn remove_script_drops_a_spool_holding_only_our_files() {
+        let dir =
+            std::env::temp_dir().join(format!("ssh-paste-remove-ours-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let spool = dir.join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        for name in ["clip.txt", "clip.png", "clip.tmp"] {
+            std::fs::write(spool.join(name), "x").unwrap();
+        }
+        let script = remove_script(
+            &format!("'{}'", dir.join("bin").display()),
+            &format!("'{}'", spool.display()),
+        );
+        let ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(!spool.exists(), "emptied spool removed");
+    }
+
+    #[test]
+    fn remove_script_spares_a_home_shaped_spool_dir() {
+        let home =
+            std::env::temp_dir().join(format!("ssh-paste-remove-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
+        std::fs::write(home.join("Documents").join("keep.txt"), "precious").unwrap();
+        let script = remove_script(&remote_path_expr("~/.local/bin"), &remote_path_expr("~/"));
+        let ok = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(
+            home.join("Documents").join("keep.txt").exists(),
+            "a spool_dir of ~/ must not take the home directory with it"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
