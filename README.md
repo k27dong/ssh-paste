@@ -24,8 +24,11 @@ Requires `ssh` on PATH (stock on macOS, Linux, and Windows 10+).
     ssh-paste setup <ssh-alias>
 
 One command: installs the shims into `~/.local/bin` on the remote, verifies
-PATH, runs a live probe, and registers the target in
-`~/.config/ssh-paste/config.toml`. The first target becomes the default.
+PATH, runs a live probe, and registers the target in your OS's standard
+config directory — `~/.config/ssh-paste/config.toml` on Linux,
+`~/Library/Application Support/ssh-paste/config.toml` on macOS, or
+`%APPDATA%\ssh-paste\config.toml` on Windows. The first target becomes the
+default.
 
 ## Use
 
