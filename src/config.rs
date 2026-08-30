@@ -20,11 +20,11 @@ pub struct Target {
     pub shim_dir: String,
 }
 
-fn default_spool_dir() -> String {
+pub fn default_spool_dir() -> String {
     "~/.cache/ssh-paste".into()
 }
 
-fn default_shim_dir() -> String {
+pub fn default_shim_dir() -> String {
     "~/.local/bin".into()
 }
 

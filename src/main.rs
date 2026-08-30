@@ -31,11 +31,11 @@ fn main() {
     let result = match cli.command {
         Command::Send { target } => cmd_send(&ssh, target.as_deref()),
         Command::Setup {
-            ssh_alias: _,
-            name: _,
-            force: _,
-        } => todo!("task 6"),
-        Command::Remove { target: _ } => todo!("task 6"),
+            ssh_alias,
+            name,
+            force,
+        } => cmd_setup(&ssh, &ssh_alias, name.as_deref(), force),
+        Command::Remove { target } => cmd_remove(&ssh, &target),
     };
     if let Err(err) = result {
         eprintln!("ssh-paste: {err:#}");
@@ -52,4 +52,19 @@ fn cmd_send(ssh: &std::ffi::OsStr, target: Option<&str>) -> anyhow::Result<()> {
     let (name, t) = cfg.resolve(target)?;
     let payload = ssh_paste::clipboard::read()?;
     ssh_paste::send::send(ssh, name, t, payload)
+}
+
+fn cmd_setup(
+    ssh: &std::ffi::OsStr,
+    ssh_alias: &str,
+    name: Option<&str>,
+    force: bool,
+) -> anyhow::Result<()> {
+    let mut cfg = ssh_paste::config::load()?;
+    ssh_paste::setup::setup(ssh, &mut cfg, ssh_alias, name, force)
+}
+
+fn cmd_remove(ssh: &std::ffi::OsStr, target: &str) -> anyhow::Result<()> {
+    let mut cfg = ssh_paste::config::load()?;
+    ssh_paste::setup::remove(ssh, &mut cfg, target)
 }
