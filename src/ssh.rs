@@ -16,6 +16,7 @@ impl std::fmt::Display for SshFailed {
 impl std::error::Error for SshFailed {}
 
 pub fn run(ssh: &OsStr, host: &str, script: &str) -> Result<String> {
+    let script = format!("sh -c {}", crate::sh::sh_quote(script)); // the remote login shell may be fish or csh, which cannot run these scripts
     let out = Command::new(ssh)
         .arg(host)
         .arg(script)
@@ -30,6 +31,7 @@ pub fn run(ssh: &OsStr, host: &str, script: &str) -> Result<String> {
 }
 
 pub fn stream(ssh: &OsStr, host: &str, script: &str, stdin: &[u8]) -> Result<()> {
+    let script = format!("sh -c {}", crate::sh::sh_quote(script)); // the remote login shell may be fish or csh, which cannot run these scripts
     let mut child = Command::new(ssh)
         .arg(host)
         .arg(script)
@@ -61,6 +63,14 @@ mod tests {
         let err = run(sh, "-c", "exit 7").unwrap_err();
         let failed = err.downcast_ref::<SshFailed>().unwrap();
         assert_eq!(failed.0, 7);
+    }
+
+    #[test]
+    fn run_wraps_scripts_that_carry_quotes_and_expansions() {
+        let sh = std::ffi::OsStr::new("sh");
+        let home = std::env::var("HOME").unwrap();
+        let out = run(sh, "-c", r#"printf '%s' "it's $HOME""#).unwrap();
+        assert_eq!(out, format!("it's {home}"));
     }
 
     #[test]
