@@ -77,7 +77,8 @@ mod tests {
             run_with(sh, &[], "-c", "echo captured").unwrap(),
             run(sh, "-c", "echo captured").unwrap()
         );
-        assert_eq!(run_with(sh, &["-e"], "-c", "echo ok").unwrap(), "ok");
+        let argv = run_with(std::ffi::OsStr::new("echo"), &["A"], "B", "C").unwrap();
+        assert_eq!(argv, "A B sh -c 'C'");
     }
 
     #[test]

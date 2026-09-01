@@ -190,12 +190,12 @@ pub fn setup(
     }
 
     match TcpListener::bind(("127.0.0.1", port)) {
-        Err(_) => eprintln!(
-            "warning: 127.0.0.1:{port} is busy locally (ssh-paste serve already running?); skipping the pull probe"
+        Err(err) => eprintln!(
+            "warning: 127.0.0.1:{port} is busy locally (ssh-paste serve already running?); skipping the pull probe: {err}"
         ),
         Ok(listener) => {
             listener
-                .set_nonblocking(true)
+                .set_nonblocking(true) // accept must never block, or the loop below would not come back to the stop flag
                 .with_context(|| format!("listening on 127.0.0.1:{port} for the pull probe"))?;
             let nonce = format!("ssh-paste pull probe {}", probe_nanos()?);
             let stop = Arc::new(AtomicBool::new(false));
@@ -219,7 +219,7 @@ pub fn setup(
                                 if err.kind() != std::io::ErrorKind::WouldBlock {
                                     eprintln!("warning: pull probe accept failed: {err}");
                                 }
-                                std::thread::sleep(Duration::from_millis(20)); // accept must never block, or the loop would not come back to the stop flag
+                                std::thread::sleep(Duration::from_millis(20));
                             }
                         }
                     }
@@ -308,7 +308,11 @@ pub fn setup(
     println!("to finish pull mode, add to ~/.ssh/config and reconnect:");
     println!("  Host {ssh_alias}");
     println!("    RemoteForward {port} 127.0.0.1:{port}");
-    println!("then keep `ssh-paste serve` running locally");
+    if port == default_pull_port() {
+        println!("then keep `ssh-paste serve` running locally");
+    } else {
+        println!("then keep `ssh-paste serve --port {port}` running locally");
+    }
     Ok(())
 }
 
