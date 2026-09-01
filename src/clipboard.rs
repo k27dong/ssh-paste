@@ -34,6 +34,13 @@ impl Payload {
             Payload::Png(_) => "clip.txt",
         }
     }
+
+    pub fn kind_mime(&self) -> &'static str {
+        match self {
+            Payload::Text(_) => "text/plain",
+            Payload::Png(_) => "image/png",
+        }
+    }
 }
 
 pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {

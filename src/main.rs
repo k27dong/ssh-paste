@@ -23,6 +23,11 @@ enum Command {
     },
     #[command(about = "Uninstall shims from a target and forget it")]
     Remove { target: String },
+    #[command(about = "Answer clipboard requests for remote sessions (loopback only)")]
+    Serve {
+        #[arg(long, default_value_t = 7717)]
+        port: u16,
+    },
 }
 
 fn main() {
@@ -36,6 +41,7 @@ fn main() {
             force,
         } => cmd_setup(&ssh, &ssh_alias, name.as_deref(), force),
         Command::Remove { target } => cmd_remove(&ssh, &target),
+        Command::Serve { port } => cmd_serve(port),
     };
     if let Err(err) = result {
         eprintln!("ssh-paste: {err:#}");
@@ -67,4 +73,11 @@ fn cmd_setup(
 fn cmd_remove(ssh: &std::ffi::OsStr, target: &str) -> anyhow::Result<()> {
     let mut cfg = ssh_paste::config::load()?;
     ssh_paste::setup::remove(ssh, &mut cfg, target)
+}
+
+fn cmd_serve(port: u16) -> anyhow::Result<()> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
+    println!("ssh-paste serve on 127.0.0.1:{port} (Ctrl+C to stop)");
+    ssh_paste::serve::serve(listener, ssh_paste::clipboard::read)
 }

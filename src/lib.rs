@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod send;
+pub mod serve;
 pub mod setup;
 pub mod sh;
 pub mod shims;
