@@ -33,10 +33,12 @@ paths (a pull round-trip through a real reverse tunnel, and a push round-trip
 through the spool), registers the target, and prints the exact ssh config
 line to add:
 
-    Host <ssh-alias>
-      RemoteForward 7717 127.0.0.1:7717
+    Host <hostname>
+      RemoteForward 127.0.0.1:7717 127.0.0.1:7717
 
-Add it, reconnect, and keep the server running locally:
+Add it, reconnect, and keep the server running locally. An ssh master left
+running by `ControlPersist` keeps the old forwards, so run `ssh -O exit
+<ssh-alias>` before reconnecting:
 
     ssh-paste serve
 
@@ -81,6 +83,10 @@ re-run `ssh-paste setup` — the shims bake those values in.
   clipboard on demand — that is what "nothing in between" costs. Only hosts
   you add the `RemoteForward` line for get this; everything binds loopback
   on both machines, nothing is reachable from any network.
+- On a multi-user remote the loopback port is first-come-first-served: pick a
+  unique `--port` per user on shared hosts, and take ssh's "remote port
+  forwarding failed" warning seriously — it means someone else holds the port
+  and your Ctrl+V would read their listener.
 - Nothing is cached: `serve` reads the clipboard only when asked. The spool
   holds one explicitly sent item (0600) until your next send or
   `ssh-paste remove <target>` — remember that before `send`ing secrets.

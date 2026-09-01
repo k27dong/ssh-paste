@@ -62,6 +62,10 @@ done"#
     )
 }
 
+fn host_pattern(ssh_alias: &str) -> &str {
+    ssh_alias.rsplit('@').next().unwrap_or(ssh_alias) // ssh matches Host patterns against the hostname, never against user@host
+}
+
 fn probe_nanos() -> Result<u128> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -229,7 +233,7 @@ pub fn setup(
                 })
             };
 
-            let forward = format!("{port}:127.0.0.1:{port}");
+            let forward = format!("127.0.0.1:{port}:127.0.0.1:{port}");
             let pulled = ssh::run_with(
                 ssh_bin,
                 &["-R", &forward],
@@ -311,8 +315,11 @@ pub fn setup(
         }
     );
     println!("to finish pull mode, add to ~/.ssh/config and reconnect:");
-    println!("  Host {ssh_alias}");
-    println!("    RemoteForward {port} 127.0.0.1:{port}");
+    println!("  Host {}", host_pattern(ssh_alias));
+    println!("    RemoteForward 127.0.0.1:{port} 127.0.0.1:{port}");
+    println!(
+        "(an existing ControlPersist master keeps old forwards — run `ssh -O exit {ssh_alias}` before reconnecting)"
+    );
     if port == default_pull_port() {
         println!("then keep `ssh-paste serve` running locally");
     } else {
@@ -350,6 +357,12 @@ pub fn remove(ssh_bin: &OsStr, cfg: &mut Config, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_pattern_drops_the_user_part() {
+        assert_eq!(host_pattern("pod"), "pod");
+        assert_eq!(host_pattern("hermes@pod.example.com"), "pod.example.com");
+    }
 
     #[test]
     fn inspect_script_reports_all_states() {

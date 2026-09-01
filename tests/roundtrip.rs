@@ -213,7 +213,7 @@ fn pull_probe_reads_the_live_clipboard_through_the_shim() {
 
     let pulled = ssh::run_with(
         &ssh_bin,
-        &["-R", &format!("{port}:127.0.0.1:{port}")],
+        &["-R", &format!("127.0.0.1:{port}:127.0.0.1:{port}")],
         &t.host,
         &format!("{shim_dir_expr}/xclip -selection clipboard -t text/plain -o"),
     );
