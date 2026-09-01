@@ -16,6 +16,16 @@ enum Spool {
 }
 
 fn run_shim(render: fn(&str, u16) -> String, spool: Spool, port: u16, args: &[&str]) -> Output {
+    run_shim_env(render, spool, port, args, &[])
+}
+
+fn run_shim_env(
+    render: fn(&str, u16) -> String,
+    spool: Spool,
+    port: u16,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Output {
     let dir = tempdir();
     match spool {
         Spool::Image => fs::write(dir.join("clip.png"), PNG_BYTES).unwrap(),
@@ -27,14 +37,19 @@ fn run_shim(render: fn(&str, u16) -> String, spool: Spool, port: u16, args: &[&s
     fs::write(&shim, script).unwrap();
     let mut cmd = Command::new("sh");
     cmd.arg(&shim).args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
     cmd.output().unwrap()
 }
 
 fn tempdir() -> std::path::PathBuf {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "ssh-paste-shim-{}-{}",
+        "ssh-paste-shim-{}-{}-{}",
         std::process::id(),
-        rand_suffix()
+        rand_suffix(),
+        SEQ.fetch_add(1, Ordering::Relaxed) // parallel tests can read the same nanosecond and would then share a shim path
     ));
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -326,6 +341,79 @@ fn tunnel_serves_live_text() {
     let out = run_shim(shims::render_wl_paste, Spool::Empty, port, &[]);
     assert_eq!(code(&out), 0);
     assert_eq!(out.stdout, b"live text");
+}
+
+#[test]
+fn tunnel_answering_empty_never_serves_a_stale_spool() {
+    let port = start_tunnel(|| anyhow::bail!("clipboard is empty"));
+
+    let out = run_shim(
+        shims::render_xclip,
+        Spool::Image,
+        port,
+        &["-selection", "clipboard", "-t", "TARGETS", "-o"],
+    );
+    assert_eq!(
+        code(&out),
+        1,
+        "an authoritative 404 must read as an empty clipboard, not as the spool"
+    );
+
+    let out = run_shim(
+        shims::render_xclip,
+        Spool::Image,
+        port,
+        &["-selection", "clipboard", "-t", "image/png", "-o"],
+    );
+    assert_ne!(code(&out), 0);
+    assert!(
+        out.stdout.is_empty(),
+        "the stale spool png must not be served"
+    );
+
+    let out = run_shim(shims::render_wl_paste, Spool::Image, port, &["-l"]);
+    assert_eq!(code(&out), 1);
+
+    let out = run_shim(
+        shims::render_wl_paste,
+        Spool::Image,
+        port,
+        &["--type", "image/png"],
+    );
+    assert_ne!(code(&out), 0);
+    assert!(
+        out.stdout.is_empty(),
+        "the stale spool png must not be served"
+    );
+}
+
+#[test]
+fn spool_source_override_ignores_a_live_tunnel() {
+    let port = start_tunnel(|| Ok(Payload::Text("live text".into())));
+    let spool_only = [("SSH_PASTE_SOURCE", "spool")];
+
+    let out = run_shim_env(
+        shims::render_xclip,
+        Spool::Image,
+        port,
+        &["-selection", "clipboard", "-t", "image/png", "-o"],
+        &spool_only,
+    );
+    assert_eq!(code(&out), 0);
+    assert_eq!(
+        out.stdout, PNG_BYTES,
+        "the spool answered, so the live tunnel was never consulted"
+    );
+
+    let out = run_shim_env(
+        shims::render_wl_paste,
+        Spool::Image,
+        port,
+        &["--type", "image/png"],
+        &spool_only,
+    );
+    assert_eq!(code(&out), 0);
+    assert_eq!(out.stdout, PNG_BYTES);
 }
 
 #[test]

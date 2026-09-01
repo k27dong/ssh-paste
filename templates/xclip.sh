@@ -8,8 +8,16 @@ txt="$spool/clip.txt"
 fail() { printf '%s\n' "$1" >&2; exit "$2"; }
 
 kind=""
-if command -v curl >/dev/null 2>&1; then
-  kind=$(curl -sf --connect-timeout 1 --max-time 5 "http://127.0.0.1:$port/kind" 2>/dev/null) || kind=""
+tunnel_empty=false
+if [ "${SSH_PASTE_SOURCE:-}" = spool ]; then
+  :
+elif command -v curl >/dev/null 2>&1; then
+  if kind=$(curl -sf --connect-timeout 1 --max-time 5 "http://127.0.0.1:$port/kind" 2>/dev/null); then
+    :
+  else
+    [ $? -eq 22 ] && tunnel_empty=true
+    kind=""
+  fi
 else
   echo "ssh-paste shim: curl not found; using spool only" >&2
 fi
@@ -21,18 +29,20 @@ case "$kind" in
   image/png) src=tunnel; have_image=true ;;
   text/plain) src=tunnel; have_text=true ;;
   *)
-    [ -f "$png" ] && have_image=true
-    [ -f "$txt" ] && have_text=true
+    if [ "$tunnel_empty" = false ]; then
+      [ -f "$png" ] && have_image=true
+      [ -f "$txt" ] && have_text=true
+    fi
     ;;
 esac
 
 emit_image() {
-  if [ "$src" = tunnel ]; then exec curl -sf --max-time 20 "http://127.0.0.1:$port/data/image"; fi
+  if [ "$src" = tunnel ]; then exec curl -sf --connect-timeout 1 --max-time 20 "http://127.0.0.1:$port/data/image"; fi
   exec cat "$png"
 }
 
 emit_text() {
-  if [ "$src" = tunnel ]; then exec curl -sf --max-time 20 "http://127.0.0.1:$port/data/text"; fi
+  if [ "$src" = tunnel ]; then exec curl -sf --connect-timeout 1 --max-time 20 "http://127.0.0.1:$port/data/text"; fi
   exec cat "$txt"
 }
 

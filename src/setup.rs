@@ -260,7 +260,9 @@ pub fn setup(
     let readback = ssh::run(
         ssh_bin,
         &target.host,
-        &format!("{shim_dir_expr}/xclip -selection clipboard -t text/plain -o"),
+        &format!(
+            "SSH_PASTE_SOURCE=spool {shim_dir_expr}/xclip -selection clipboard -t text/plain -o"
+        ),
     )
     .with_context(|| {
         format!(
