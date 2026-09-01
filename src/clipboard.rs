@@ -51,6 +51,9 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+const EMPTY: &str =
+    "clipboard is empty or holds unsupported content (ssh-paste sends text and images)";
+
 pub fn read() -> Result<Payload> {
     let mut cb = arboard::Clipboard::new().context("opening clipboard")?;
     if let Ok(img) = cb.get_image() {
@@ -62,7 +65,20 @@ pub fn read() -> Result<Payload> {
     {
         return Ok(Payload::Text(text));
     }
-    bail!("clipboard is empty or holds unsupported content (ssh-paste sends text and images)");
+    bail!(EMPTY);
+}
+
+pub fn peek_kind() -> Result<&'static str> {
+    let mut cb = arboard::Clipboard::new().context("opening clipboard")?;
+    if cb.get_image().is_ok() {
+        return Ok("image/png");
+    }
+    if let Ok(text) = cb.get_text()
+        && !text.is_empty()
+    {
+        return Ok("text/plain");
+    }
+    bail!(EMPTY);
 }
 
 #[cfg(test)]

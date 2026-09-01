@@ -200,7 +200,10 @@ fn pull_probe_reads_the_live_clipboard_through_the_shim() {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
-                        serve::handle_one(stream, &|| Ok(Payload::Text("live".into()))).unwrap();
+                        serve::handle_one(stream, &|| Ok("text/plain"), &|| {
+                            Ok(Payload::Text("live".into()))
+                        })
+                        .unwrap();
                     }
                     Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
                 }

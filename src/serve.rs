@@ -6,11 +6,15 @@ use anyhow::Result;
 
 use crate::clipboard::Payload;
 
-pub fn serve(listener: TcpListener, source: impl Fn() -> Result<Payload>) -> Result<()> {
+pub fn serve(
+    listener: TcpListener,
+    kind_source: impl Fn() -> Result<&'static str>,
+    data_source: impl Fn() -> Result<Payload>,
+) -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(err) = handle_one(s, &source) {
+                if let Err(err) = handle_one(s, &kind_source, &data_source) {
                     eprintln!("ssh-paste serve: {err:#}");
                 }
             }
@@ -20,8 +24,13 @@ pub fn serve(listener: TcpListener, source: impl Fn() -> Result<Payload>) -> Res
     Ok(())
 }
 
-pub fn handle_one(mut stream: TcpStream, source: &impl Fn() -> Result<Payload>) -> Result<()> {
+pub fn handle_one(
+    mut stream: TcpStream,
+    kind_source: &impl Fn() -> Result<&'static str>,
+    data_source: &impl Fn() -> Result<Payload>,
+) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -36,14 +45,27 @@ pub fn handle_one(mut stream: TcpStream, source: &impl Fn() -> Result<Payload>) 
             break;
         }
     }
-    match (path.as_str(), source()) {
-        ("/kind", Ok(p)) => respond(&mut stream, 200, "text/plain", p.kind_mime().as_bytes()),
-        ("/data/image", Ok(Payload::Png(b))) => respond(&mut stream, 200, "image/png", &b),
-        ("/data/text", Ok(Payload::Text(t))) => {
-            respond(&mut stream, 200, "text/plain; charset=utf-8", t.as_bytes())
-        }
-        _ => respond(&mut stream, 404, "text/plain", b"clipboard unavailable"),
+    match path.as_str() {
+        "/kind" => match kind_source() {
+            Ok(kind) => respond(&mut stream, 200, "text/plain", kind.as_bytes()),
+            Err(_) => unavailable(&mut stream),
+        },
+        "/data/image" => match data_source() {
+            Ok(Payload::Png(b)) => respond(&mut stream, 200, "image/png", &b),
+            _ => unavailable(&mut stream),
+        },
+        "/data/text" => match data_source() {
+            Ok(Payload::Text(t)) => {
+                respond(&mut stream, 200, "text/plain; charset=utf-8", t.as_bytes())
+            }
+            _ => unavailable(&mut stream),
+        },
+        _ => unavailable(&mut stream),
     }
+}
+
+fn unavailable(stream: &mut TcpStream) -> Result<()> {
+    respond(stream, 404, "text/plain", b"clipboard unavailable")
 }
 
 fn respond(stream: &mut TcpStream, status: u16, ctype: &str, body: &[u8]) -> Result<()> {
@@ -69,7 +91,8 @@ mod tests {
 
     fn roundtrip(
         path: &'static str,
-        source: impl Fn() -> anyhow::Result<Payload>,
+        kind_source: impl Fn() -> anyhow::Result<&'static str>,
+        data_source: impl Fn() -> anyhow::Result<Payload>,
     ) -> (String, Vec<u8>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -81,7 +104,7 @@ mod tests {
             buf
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_one(stream, &source).unwrap();
+        handle_one(stream, &kind_source, &data_source).unwrap();
         let raw = client.join().unwrap();
         let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         (
@@ -92,10 +115,14 @@ mod tests {
 
     #[test]
     fn kind_reports_current_clipboard() {
-        let (head, body) = roundtrip("/kind", || Ok(Payload::Png(vec![1])));
+        let (head, body) = roundtrip("/kind", || Ok("image/png"), || Ok(Payload::Png(vec![1])));
         assert!(head.starts_with("HTTP/1.1 200"));
         assert_eq!(body, b"image/png");
-        let (head, body) = roundtrip("/kind", || Ok(Payload::Text("x".into())));
+        let (head, body) = roundtrip(
+            "/kind",
+            || Ok("text/plain"),
+            || Ok(Payload::Text("x".into())),
+        );
         assert!(head.starts_with("HTTP/1.1 200"));
         assert_eq!(body, b"text/plain");
     }
@@ -104,29 +131,70 @@ mod tests {
     fn data_serves_matching_kind_only() {
         let png = vec![137, 80, 78, 71, 9, 9];
         let p = png.clone();
-        let (head, body) = roundtrip("/data/image", move || Ok(Payload::Png(p.clone())));
+        let (head, body) = roundtrip(
+            "/data/image",
+            || Ok("image/png"),
+            move || Ok(Payload::Png(p.clone())),
+        );
         assert!(head.starts_with("HTTP/1.1 200"));
         assert!(head.contains("Content-Type: image/png"));
         assert!(head.contains(&format!("Content-Length: {}", png.len())));
         assert_eq!(body, png);
 
-        let (head, _) = roundtrip("/data/image", || Ok(Payload::Text("now text".into())));
+        let (head, _) = roundtrip(
+            "/data/image",
+            || Ok("text/plain"),
+            || Ok(Payload::Text("now text".into())),
+        );
         assert!(
             head.starts_with("HTTP/1.1 404"),
             "kind changed between calls must 404: {head}"
         );
 
-        let (head, body) = roundtrip("/data/text", || Ok(Payload::Text("hé".into())));
+        let (head, body) = roundtrip(
+            "/data/text",
+            || Ok("text/plain"),
+            || Ok(Payload::Text("hé".into())),
+        );
         assert!(head.starts_with("HTTP/1.1 200"));
         assert!(head.contains("Content-Type: text/plain; charset=utf-8"));
         assert_eq!(body, "hé".as_bytes());
     }
 
     #[test]
+    fn kind_and_data_answer_from_their_own_source() {
+        let (head, body) = roundtrip(
+            "/kind",
+            || Ok("image/png"),
+            || Ok(Payload::Text("stale text".into())),
+        );
+        assert!(head.starts_with("HTTP/1.1 200"));
+        assert_eq!(body, b"image/png");
+
+        let (head, _) = roundtrip(
+            "/data/image",
+            || Ok("image/png"),
+            || Ok(Payload::Text("stale text".into())),
+        );
+        assert!(
+            head.starts_with("HTTP/1.1 404"),
+            "a kind/data disagreement must stay a clean 404: {head}"
+        );
+    }
+
+    #[test]
     fn unavailable_clipboard_and_bad_paths_fail_cleanly() {
-        let (head, _) = roundtrip("/kind", || anyhow::bail!("no clipboard"));
+        let (head, _) = roundtrip(
+            "/kind",
+            || anyhow::bail!("no clipboard"),
+            || anyhow::bail!("no clipboard"),
+        );
         assert!(head.starts_with("HTTP/1.1 404"));
-        let (head, _) = roundtrip("/nope", || Ok(Payload::Text("x".into())));
+        let (head, _) = roundtrip(
+            "/nope",
+            || Ok("text/plain"),
+            || Ok(Payload::Text("x".into())),
+        );
         assert!(head.starts_with("HTTP/1.1 404"));
     }
 
@@ -142,7 +210,10 @@ mod tests {
             buf
         });
         let (stream, _) = listener.accept().unwrap();
-        handle_one(stream, &|| Ok(Payload::Text("x".into()))).unwrap();
+        handle_one(stream, &|| Ok("text/plain"), &|| {
+            Ok(Payload::Text("x".into()))
+        })
+        .unwrap();
         assert!(client.join().unwrap().starts_with(b"HTTP/1.1 400"));
     }
 }

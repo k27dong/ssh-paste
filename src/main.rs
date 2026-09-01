@@ -83,5 +83,9 @@ fn cmd_serve(port: u16) -> anyhow::Result<()> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))
         .map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
     println!("ssh-paste serve on 127.0.0.1:{port} (Ctrl+C to stop)");
-    ssh_paste::serve::serve(listener, ssh_paste::clipboard::read)
+    ssh_paste::serve::serve(
+        listener,
+        ssh_paste::clipboard::peek_kind,
+        ssh_paste::clipboard::read,
+    )
 }

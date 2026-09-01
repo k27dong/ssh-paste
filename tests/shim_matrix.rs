@@ -77,8 +77,9 @@ fn start_tunnel(source: impl Fn() -> anyhow::Result<Payload> + Send + 'static) -
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
+        let kind = || source().map(|payload| payload.kind_mime());
         for stream in listener.incoming().flatten() {
-            let _ = serve::handle_one(stream, &source);
+            let _ = serve::handle_one(stream, &kind, &source);
         }
     });
     port

@@ -203,6 +203,7 @@ pub fn setup(
                 let stop = Arc::clone(&stop);
                 let nonce = nonce.clone();
                 std::thread::spawn(move || {
+                    let kind_source = || Ok("text/plain");
                     let source = || Ok(Payload::Text(nonce.clone()));
                     while !stop.load(Ordering::Relaxed) {
                         match listener.accept() {
@@ -210,7 +211,9 @@ pub fn setup(
                                 let served = stream
                                     .set_nonblocking(false) // macOS hands back an accepted socket that inherited the listener's nonblocking flag
                                     .context("switching the accepted connection back to blocking")
-                                    .and_then(|()| serve::handle_one(stream, &source));
+                                    .and_then(|()| {
+                                        serve::handle_one(stream, &kind_source, &source)
+                                    });
                                 if let Err(err) = served {
                                     eprintln!("warning: pull probe request failed: {err:#}");
                                 }
