@@ -35,7 +35,15 @@ fn target(dir: &Path) -> Target {
         host: "testhost".into(),
         spool_dir: dir.join("spool").to_str().unwrap().into(),
         shim_dir: dir.join("bin").to_str().unwrap().into(),
+        pull_port: 7717,
     }
+}
+
+fn closed_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    port
 }
 
 fn shim_read(dir: &Path, args: &[&str]) -> std::process::Output {
@@ -54,7 +62,11 @@ fn text_and_image_roundtrip_through_send_and_shims() {
 
     fs::create_dir_all(dir.join("bin")).unwrap();
     let spool_expr = ssh_paste::sh::remote_path_expr(&t.spool_dir);
-    fs::write(dir.join("bin/xclip"), shims::render_xclip(&spool_expr)).unwrap();
+    fs::write(
+        dir.join("bin/xclip"),
+        shims::render_xclip(&spool_expr, closed_port()),
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(dir.join("bin/xclip"), fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -106,14 +118,14 @@ fn setup_scripts_compose_end_to_end() {
         &ssh_bin,
         &t.host,
         &setup::install_script(&shim_dir_expr, "xclip"),
-        shims::render_xclip(&spool_expr).as_bytes(),
+        shims::render_xclip(&spool_expr, closed_port()).as_bytes(),
     )
     .unwrap();
     ssh::stream(
         &ssh_bin,
         &t.host,
         &setup::install_script(&shim_dir_expr, "wl-paste"),
-        shims::render_wl_paste(&spool_expr).as_bytes(),
+        shims::render_wl_paste(&spool_expr, closed_port()).as_bytes(),
     )
     .unwrap();
 

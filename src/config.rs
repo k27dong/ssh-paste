@@ -18,6 +18,8 @@ pub struct Target {
     pub spool_dir: String,
     #[serde(default = "default_shim_dir")]
     pub shim_dir: String,
+    #[serde(default = "default_pull_port")]
+    pub pull_port: u16,
 }
 
 pub fn default_spool_dir() -> String {
@@ -26,6 +28,10 @@ pub fn default_spool_dir() -> String {
 
 pub fn default_shim_dir() -> String {
     "~/.local/bin".into()
+}
+
+pub fn default_pull_port() -> u16 {
+    7717
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -99,6 +105,9 @@ impl Target {
                 );
             }
         }
+        if self.pull_port == 0 {
+            bail!("pull_port must be 1-65535");
+        }
         Ok(())
     }
 }
@@ -138,6 +147,7 @@ mod tests {
                 host: "hermes-pod".into(),
                 spool_dir: "~/.cache/ssh-paste".into(),
                 shim_dir: "~/.local/bin".into(),
+                pull_port: 7717,
             },
         );
         let cfg = Config {
@@ -162,6 +172,7 @@ mod tests {
         assert_eq!(t.host, "hermes-pod");
         assert_eq!(t.spool_dir, "~/.cache/ssh-paste");
         assert_eq!(t.shim_dir, "~/.local/bin");
+        assert_eq!(t.pull_port, 7717);
     }
 
     #[test]
@@ -195,6 +206,7 @@ mod tests {
             host: host.into(),
             spool_dir: spool.into(),
             shim_dir: shim.into(),
+            pull_port: 7717,
         };
         assert!(
             bad("-oProxyCommand=evil", "~/.cache/ssh-paste", "~/.local/bin")
@@ -236,6 +248,17 @@ mod tests {
             bad("user@host", "/var/tmp/spool", "/opt/bin")
                 .validate()
                 .is_ok()
+        );
+        assert!(
+            Target {
+                host: "h".into(),
+                spool_dir: "~/.cache/ssh-paste".into(),
+                shim_dir: "~/.local/bin".into(),
+                pull_port: 0,
+            }
+            .validate()
+            .is_err(),
+            "pull_port 0 accepted"
         );
     }
 }

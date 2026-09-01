@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::clipboard::Payload;
-use crate::config::{Config, Target, default_shim_dir, default_spool_dir};
+use crate::config::{Config, Target, default_pull_port, default_shim_dir, default_spool_dir};
 use crate::sh::{remote_path_expr, sh_quote};
 use crate::shims::{MARKER_PREFIX, render_wl_paste, render_xclip};
 use crate::{send, ssh};
@@ -72,11 +72,13 @@ pub fn setup(
             host: ssh_alias.to_string(),
             spool_dir: existing.spool_dir.clone(),
             shim_dir: existing.shim_dir.clone(),
+            pull_port: existing.pull_port,
         },
         None => Target {
             host: ssh_alias.to_string(),
             spool_dir: default_spool_dir(),
             shim_dir: default_shim_dir(),
+            pull_port: default_pull_port(),
         },
     };
     target.validate()?;
@@ -131,8 +133,8 @@ pub fn setup(
     }
 
     for (tool, body) in [
-        ("xclip", render_xclip(&spool_expr)),
-        ("wl-paste", render_wl_paste(&spool_expr)),
+        ("xclip", render_xclip(&spool_expr, target.pull_port)),
+        ("wl-paste", render_wl_paste(&spool_expr, target.pull_port)),
     ] {
         ssh::stream(
             ssh_bin,
