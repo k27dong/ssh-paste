@@ -36,9 +36,10 @@ line to add:
     Host <hostname>
       RemoteForward 127.0.0.1:7717 127.0.0.1:7717
 
-Add it, reconnect, and keep the server running locally. An ssh master left
-running by `ControlPersist` keeps the old forwards, so run `ssh -O exit
-<ssh-alias>` before reconnecting:
+`ssh-paste setup` offers to append these lines to `~/.ssh/config` for you —
+approve the prompt, or paste the printed lines yourself — then reconnect. An
+ssh master left running by `ControlPersist` keeps the old forwards, so run
+`ssh -O exit <ssh-alias>` before reconnecting:
 
     ssh-paste serve
 

@@ -1,5 +1,7 @@
 use std::ffi::OsStr;
+use std::io::{IsTerminal, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -64,6 +66,64 @@ done"#
 
 fn host_pattern(ssh_alias: &str) -> &str {
     ssh_alias.rsplit('@').next().unwrap_or(ssh_alias) // ssh matches Host patterns against the hostname, never against user@host
+}
+
+pub enum AppendOutcome {
+    Appended,
+    AlreadyPresent,
+}
+
+pub fn append_forward_stanza(
+    config_path: &Path,
+    host_pattern: &str,
+    port: u16,
+) -> Result<AppendOutcome> {
+    let marker = format!("RemoteForward 127.0.0.1:{port} 127.0.0.1:{port}");
+    let existing = match std::fs::read_to_string(config_path) {
+        Ok(content) => Some(content),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err).with_context(|| format!("reading {}", config_path.display())),
+    };
+    if let Some(content) = &existing
+        && content.lines().any(|line| line.trim() == marker)
+    {
+        return Ok(AppendOutcome::AlreadyPresent);
+    }
+
+    let parent = config_path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", config_path.display()))?;
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("setting permissions on {}", parent.display()))?;
+        }
+    }
+
+    let stanza =
+        format!("\nHost {host_pattern}\n  RemoteForward 127.0.0.1:{port} 127.0.0.1:{port}\n");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(config_path)
+        .with_context(|| format!("opening {}", config_path.display()))?;
+    file.write_all(stanza.as_bytes())
+        .with_context(|| format!("appending to {}", config_path.display()))?;
+
+    if existing.is_none() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("setting permissions on {}", config_path.display()))?;
+        }
+    }
+
+    Ok(AppendOutcome::Appended)
 }
 
 fn probe_nanos() -> Result<u128> {
@@ -320,6 +380,25 @@ pub fn setup(
     println!(
         "(an existing ControlPersist master keeps old forwards — run `ssh -O exit {ssh_alias}` before reconnecting)"
     );
+    if std::io::stdin().is_terminal() {
+        eprint!("append these lines to ~/.ssh/config now? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if answer.trim().eq_ignore_ascii_case("y") {
+            let config_path = dirs::home_dir()
+                .context("no home directory on this platform")?
+                .join(".ssh")
+                .join("config");
+            match append_forward_stanza(&config_path, host_pattern(ssh_alias), port)? {
+                AppendOutcome::Appended => {
+                    println!("appended to ~/.ssh/config — reconnect to activate")
+                }
+                AppendOutcome::AlreadyPresent => {
+                    println!("already present in ~/.ssh/config — left unchanged")
+                }
+            }
+        }
+    }
     if port == default_pull_port() {
         println!("then keep `ssh-paste serve` running locally");
     } else {
@@ -530,6 +609,79 @@ mod tests {
             .unwrap();
         assert!(ok.success());
         assert!(!spool.exists(), "emptied spool removed");
+    }
+
+    #[test]
+    fn append_forward_stanza_creates_file_and_dir_when_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("ssh-paste-append-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config_path = dir.join(".ssh").join("config");
+
+        let outcome = append_forward_stanza(&config_path, "pod.example.com", 7717).unwrap();
+        assert!(matches!(outcome, AppendOutcome::Appended));
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            content,
+            "\nHost pod.example.com\n  RemoteForward 127.0.0.1:7717 127.0.0.1:7717\n"
+        );
+
+        let file_mode = std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600);
+        let parent_mode = std::fs::metadata(dir.join(".ssh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(parent_mode, 0o700);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_forward_stanza_preserves_existing_content() {
+        let dir =
+            std::env::temp_dir().join(format!("ssh-paste-append-existing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config");
+        std::fs::write(&config_path, "Host other\n  HostName 1.2.3.4\n").unwrap();
+
+        let outcome = append_forward_stanza(&config_path, "pod", 7717).unwrap();
+        assert!(matches!(outcome, AppendOutcome::Appended));
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(
+            content,
+            "Host other\n  HostName 1.2.3.4\n\nHost pod\n  RemoteForward 127.0.0.1:7717 127.0.0.1:7717\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_forward_stanza_detects_existing_forward_regardless_of_indentation() {
+        let dir =
+            std::env::temp_dir().join(format!("ssh-paste-append-present-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config");
+        let original = "Host pod\n\tRemoteForward 127.0.0.1:7717 127.0.0.1:7717\n";
+        std::fs::write(&config_path, original).unwrap();
+
+        let outcome = append_forward_stanza(&config_path, "pod", 7717).unwrap();
+        assert!(matches!(outcome, AppendOutcome::AlreadyPresent));
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(content, original, "file must be byte-identical");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
