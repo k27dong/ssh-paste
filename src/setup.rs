@@ -1,5 +1,8 @@
 use std::ffi::OsStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::net::TcpListener;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
@@ -7,7 +10,7 @@ use crate::clipboard::Payload;
 use crate::config::{Config, Target, default_pull_port, default_shim_dir, default_spool_dir};
 use crate::sh::{remote_path_expr, sh_quote};
 use crate::shims::{MARKER_PREFIX, render_wl_paste, render_xclip};
-use crate::{send, ssh};
+use crate::{send, serve, ssh};
 
 pub fn inspect_script(shim_dir_expr: &str) -> String {
     let marker = sh_quote(MARKER_PREFIX);
@@ -59,12 +62,20 @@ done"#
     )
 }
 
+fn probe_nanos() -> Result<u128> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("the system clock is set before the unix epoch")?
+        .as_nanos())
+}
+
 pub fn setup(
     ssh_bin: &OsStr,
     cfg: &mut Config,
     ssh_alias: &str,
     name: Option<&str>,
     force: bool,
+    port: Option<u16>,
 ) -> Result<()> {
     let target_name = name.unwrap_or(ssh_alias);
     let target = match cfg.targets.get(target_name) {
@@ -72,16 +83,17 @@ pub fn setup(
             host: ssh_alias.to_string(),
             spool_dir: existing.spool_dir.clone(),
             shim_dir: existing.shim_dir.clone(),
-            pull_port: existing.pull_port,
+            pull_port: port.unwrap_or(existing.pull_port),
         },
         None => Target {
             host: ssh_alias.to_string(),
             spool_dir: default_spool_dir(),
             shim_dir: default_shim_dir(),
-            pull_port: default_pull_port(),
+            pull_port: port.unwrap_or_else(default_pull_port),
         },
     };
     target.validate()?;
+    let port = target.pull_port;
 
     let shim_dir_expr = remote_path_expr(&target.shim_dir);
     let spool_expr = remote_path_expr(&target.spool_dir);
@@ -177,11 +189,73 @@ pub fn setup(
         }
     }
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("the system clock is set before the unix epoch")?
-        .as_nanos();
-    let probe = format!("ssh-paste probe {nonce}");
+    match TcpListener::bind(("127.0.0.1", port)) {
+        Err(_) => eprintln!(
+            "warning: 127.0.0.1:{port} is busy locally (ssh-paste serve already running?); skipping the pull probe"
+        ),
+        Ok(listener) => {
+            listener
+                .set_nonblocking(true)
+                .with_context(|| format!("listening on 127.0.0.1:{port} for the pull probe"))?;
+            let nonce = format!("ssh-paste pull probe {}", probe_nanos()?);
+            let stop = Arc::new(AtomicBool::new(false));
+            let responder = {
+                let stop = Arc::clone(&stop);
+                let nonce = nonce.clone();
+                std::thread::spawn(move || {
+                    let source = || Ok(Payload::Text(nonce.clone()));
+                    while !stop.load(Ordering::Relaxed) {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                let served = stream
+                                    .set_nonblocking(false) // macOS hands back an accepted socket that inherited the listener's nonblocking flag
+                                    .context("switching the accepted connection back to blocking")
+                                    .and_then(|()| serve::handle_one(stream, &source));
+                                if let Err(err) = served {
+                                    eprintln!("warning: pull probe request failed: {err:#}");
+                                }
+                            }
+                            Err(err) => {
+                                if err.kind() != std::io::ErrorKind::WouldBlock {
+                                    eprintln!("warning: pull probe accept failed: {err}");
+                                }
+                                std::thread::sleep(Duration::from_millis(20)); // accept must never block, or the loop would not come back to the stop flag
+                            }
+                        }
+                    }
+                })
+            };
+
+            let forward = format!("{port}:127.0.0.1:{port}");
+            let pulled = ssh::run_with(
+                ssh_bin,
+                &["-R", &forward],
+                &target.host,
+                &format!("{shim_dir_expr}/xclip -selection clipboard -t text/plain -o"),
+            );
+            stop.store(true, Ordering::Relaxed);
+            let listener_ok = responder.join().is_ok();
+
+            let pulled = pulled.with_context(|| {
+                format!(
+                    "pulling the probe through a reverse tunnel to {ssh_alias}; the remote needs curl on PATH and 127.0.0.1:{port} free for the forward"
+                )
+            })?;
+            if !listener_ok {
+                bail!(
+                    "the local pull probe listener died before the round-trip finished, so pull mode is unverified and the target was not saved; re-run `ssh-paste setup {ssh_alias}`"
+                );
+            }
+            if pulled != nonce {
+                bail!(
+                    "the shim on {ssh_alias} pulled '{pulled}' instead of '{nonce}' through the tunnel, so the target was not saved. The remote needs curl on PATH and its own 127.0.0.1:{port} free for the forward"
+                );
+            }
+            println!("pull probe ok: live clipboard round-trip verified through the tunnel");
+        }
+    }
+
+    let probe = format!("ssh-paste probe {}", probe_nanos()?);
     send::send(ssh_bin, target_name, &target, Payload::Text(probe.clone()))?;
     let readback = ssh::run(
         ssh_bin,
@@ -231,6 +305,10 @@ pub fn setup(
             ""
         }
     );
+    println!("to finish pull mode, add to ~/.ssh/config and reconnect:");
+    println!("  Host {ssh_alias}");
+    println!("    RemoteForward {port} 127.0.0.1:{port}");
+    println!("then keep `ssh-paste serve` running locally");
     Ok(())
 }
 

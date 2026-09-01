@@ -16,8 +16,13 @@ impl std::fmt::Display for SshFailed {
 impl std::error::Error for SshFailed {}
 
 pub fn run(ssh: &OsStr, host: &str, script: &str) -> Result<String> {
+    run_with(ssh, &[], host, script)
+}
+
+pub fn run_with(ssh: &OsStr, extra_args: &[&str], host: &str, script: &str) -> Result<String> {
     let script = format!("sh -c {}", crate::sh::sh_quote(script)); // the remote login shell may be fish or csh, which cannot run these scripts
     let out = Command::new(ssh)
+        .args(extra_args)
         .arg(host)
         .arg(script)
         .stdin(Stdio::null())
@@ -63,6 +68,16 @@ mod tests {
         let err = run(sh, "-c", "exit 7").unwrap_err();
         let failed = err.downcast_ref::<SshFailed>().unwrap();
         assert_eq!(failed.0, 7);
+    }
+
+    #[test]
+    fn run_with_inserts_extra_args_before_the_host() {
+        let sh = std::ffi::OsStr::new("sh");
+        assert_eq!(
+            run_with(sh, &[], "-c", "echo captured").unwrap(),
+            run(sh, "-c", "echo captured").unwrap()
+        );
+        assert_eq!(run_with(sh, &["-e"], "-c", "echo ok").unwrap(), "ok");
     }
 
     #[test]

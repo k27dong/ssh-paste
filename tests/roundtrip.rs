@@ -1,11 +1,12 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ssh_paste::clipboard::Payload;
 use ssh_paste::config::Target;
-use ssh_paste::{send, setup, shims, ssh};
+use ssh_paste::{send, serve, setup, shims, ssh};
 
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
@@ -17,7 +18,11 @@ fn no_concurrent_spawns() -> MutexGuard<'static, ()> {
 
 fn fake_ssh(dir: &Path) -> OsString {
     let path = dir.join("fake-ssh");
-    fs::write(&path, "#!/bin/sh\nshift\nexec sh -c \"$1\"\n").unwrap();
+    fs::write(
+        &path,
+        "#!/bin/sh\nwhile [ \"$1\" = \"-R\" ]; do shift 2; done\nshift\nexec sh -c \"$1\"\n",
+    )
+    .unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path.into_os_string()
@@ -152,4 +157,66 @@ fn setup_scripts_compose_end_to_end() {
     .unwrap();
     assert!(!dir.join("bin/xclip").exists());
     assert!(!dir.join("spool").exists());
+}
+
+#[test]
+fn run_with_carries_flags_ahead_of_the_host() {
+    let _lock = no_concurrent_spawns();
+    let dir = scratch("runwith");
+    let ssh_bin = fake_ssh(&dir);
+
+    let out = ssh::run_with(&ssh_bin, &["-R", "1:127.0.0.1:1"], "h", "echo ok").unwrap();
+    assert_eq!(out, "ok");
+}
+
+#[test]
+fn pull_probe_reads_the_live_clipboard_through_the_shim() {
+    let _lock = no_concurrent_spawns();
+    let dir = scratch("pullprobe");
+    let ssh_bin = fake_ssh(&dir);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+
+    let t = Target {
+        pull_port: port,
+        ..target(&dir)
+    };
+    let shim_dir_expr = ssh_paste::sh::remote_path_expr(&t.shim_dir);
+    let spool_expr = ssh_paste::sh::remote_path_expr(&t.spool_dir);
+    ssh::stream(
+        &ssh_bin,
+        &t.host,
+        &setup::install_script(&shim_dir_expr, "xclip"),
+        shims::render_xclip(&spool_expr, port).as_bytes(),
+    )
+    .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let responder = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        serve::handle_one(stream, &|| Ok(Payload::Text("live".into()))).unwrap();
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            }
+        })
+    };
+
+    let pulled = ssh::run_with(
+        &ssh_bin,
+        &["-R", &format!("{port}:127.0.0.1:{port}")],
+        &t.host,
+        &format!("{shim_dir_expr}/xclip -selection clipboard -t text/plain -o"),
+    );
+    stop.store(true, Ordering::Relaxed);
+    responder.join().unwrap();
+
+    assert_eq!(pulled.unwrap(), "live");
+    assert!(!dir.join("spool").exists(), "answered by the tunnel");
 }

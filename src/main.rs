@@ -20,6 +20,8 @@ enum Command {
         name: Option<String>,
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        port: Option<u16>,
     },
     #[command(about = "Uninstall shims from a target and forget it")]
     Remove { target: String },
@@ -39,7 +41,8 @@ fn main() {
             ssh_alias,
             name,
             force,
-        } => cmd_setup(&ssh, &ssh_alias, name.as_deref(), force),
+            port,
+        } => cmd_setup(&ssh, &ssh_alias, name.as_deref(), force, port),
         Command::Remove { target } => cmd_remove(&ssh, &target),
         Command::Serve { port } => cmd_serve(port),
     };
@@ -65,9 +68,10 @@ fn cmd_setup(
     ssh_alias: &str,
     name: Option<&str>,
     force: bool,
+    port: Option<u16>,
 ) -> anyhow::Result<()> {
     let mut cfg = ssh_paste::config::load()?;
-    ssh_paste::setup::setup(ssh, &mut cfg, ssh_alias, name, force)
+    ssh_paste::setup::setup(ssh, &mut cfg, ssh_alias, name, force, port)
 }
 
 fn cmd_remove(ssh: &std::ffi::OsStr, target: &str) -> anyhow::Result<()> {
